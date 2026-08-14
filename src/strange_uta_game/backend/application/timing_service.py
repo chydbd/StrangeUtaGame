@@ -300,6 +300,48 @@ class TimingService:
     def _reverse_cache_dir(self) -> str:
         return tempfile.gettempdir()
 
+    def mark_sentence_reverse(self, sentence_id: str, reverse_playback: bool) -> None:
+        """设置/取消某行的倒放标记（经命令栈，可撤销）。"""
+        if self._command_manager and self._project:
+            from strange_uta_game.backend.application.commands import (
+                SetSentenceReverseCommand,
+            )
+
+            self._command_manager.execute(
+                SetSentenceReverseCommand(
+                    project=self._project,
+                    sentence_id=sentence_id,
+                    reverse_playback=reverse_playback,
+                )
+            )
+            return
+        sentence = (
+            self._project.get_sentence(sentence_id) if self._project else None
+        )
+        if sentence:
+            sentence.reverse_playback = reverse_playback
+
+    def mark_reverse_range(self, start_ms: int, end_ms: int) -> int:
+        """把时间戳落在 ``[start_ms, end_ms]`` 的行自动标记为倒放，返回标记数。
+
+        用于倒放预览退出后自动标记：用户听倒放打轴的区域即倒放段。
+        """
+        if not self._project:
+            return 0
+        changed = 0
+        for sentence in self._project.sentences:
+            if not sentence.characters:
+                continue
+            in_range = any(
+                char.timestamps
+                and any(start_ms <= ts <= end_ms for ts in char.timestamps)
+                for char in sentence.characters
+            )
+            if in_range and not sentence.reverse_playback:
+                self.mark_sentence_reverse(sentence.id, True)
+                changed += 1
+        return changed
+
     def is_playing(self) -> bool:
         return self._audio_engine.is_playing()
 

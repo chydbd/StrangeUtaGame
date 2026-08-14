@@ -238,6 +238,46 @@ class UpdateCharacterCommand(Command):
         return f"更新字符属性 (char_idx={self.char_idx}, {attrs})"
 
 
+class SetSentenceReverseCommand(Command):
+    """设置/取消句子「倒放」标记命令（可撤销）。
+
+    倒放段（[@reverse]）的行在导出 Nicokara LRC 时输出 [@reverse] 标记。
+    """
+
+    def __init__(
+        self,
+        project: Project,
+        sentence_id: str,
+        reverse_playback: bool,
+    ):
+        self.project = project
+        self.sentence_id = sentence_id
+        self.reverse_playback = bool(reverse_playback)
+        self._old_value: Optional[bool] = None
+
+    def execute(self) -> None:
+        sentence = self.project.get_sentence(self.sentence_id)
+        if not sentence:
+            raise ValueError(f"句子 {self.sentence_id} 不存在")
+        self._old_value = sentence.reverse_playback
+        sentence.reverse_playback = self.reverse_playback
+
+    def undo(self) -> None:
+        if self._old_value is None:
+            return
+        sentence = self.project.get_sentence(self.sentence_id)
+        if sentence:
+            sentence.reverse_playback = self._old_value
+
+    @property
+    def description(self) -> str:
+        return (
+            "标记为倒放段"
+            if self.reverse_playback
+            else "取消倒放段标记"
+        )
+
+
 class AddRubyCommand(Command):
     """添加注音命令
 

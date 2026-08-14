@@ -188,3 +188,37 @@ class TestTimingServiceReversePreview:
         )
         assert service.enter_reverse_preview(0, 1000) is False
         assert not service.is_reverse_preview_active()
+
+    def test_mark_reverse_range_marks_sentences_in_range(self):
+        engine = FakeAudioEngine()
+        service = _make_service(engine)
+        project = service._project
+        singer = project.get_default_singer()
+        s1 = Sentence.from_text("テスト", singer.id)
+        s1.characters[0].add_timestamp(10_000)
+        s2 = Sentence.from_text("倒放", singer.id)
+        s2.characters[0].add_timestamp(20_000)
+        project.add_sentence(s1)
+        project.add_sentence(s2)
+
+        changed = service.mark_reverse_range(15_000, 25_000)
+        assert changed == 1
+        assert s1.reverse_playback is False
+        assert s2.reverse_playback is True
+
+    def test_mark_sentence_reverse_via_command_is_undoable(self):
+        from strange_uta_game.backend.application.command_manager import CommandManager
+
+        engine = FakeAudioEngine()
+        manager = CommandManager()
+        service = TimingService(audio_engine=engine, command_manager=manager)
+        project = Project()
+        singer = project.get_default_singer()
+        s = Sentence.from_text("テスト", singer.id)
+        project.add_sentence(s)
+        service.set_project(project)
+
+        service.mark_sentence_reverse(s.id, True)
+        assert s.reverse_playback is True
+        manager.undo()
+        assert s.reverse_playback is False
