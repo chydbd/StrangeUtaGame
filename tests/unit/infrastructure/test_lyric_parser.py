@@ -864,3 +864,42 @@ class TestNicokaraTagsRoundTrip:
         # 不应抛出
         _sync_nicokara_metadata_to_settings({})
         _sync_nicokara_metadata_to_settings(None)  # type: ignore[arg-type]
+
+
+class TestNicokaraReverseTags:
+    """[@reverse] / [@normal] 标记解析。"""
+
+    def _parse_flags(self, content):
+        from strange_uta_game.backend.infrastructure.parsers.lyric_parser import (
+            NicokaraParser,
+        )
+
+        parsed = NicokaraParser().parse(content)
+        return [pl.reverse_playback for pl in parsed.lines]
+
+    def test_standalone_tags_toggle_flags(self):
+        content = (
+            "[00:01:00]あ[00:01:10]\n"
+            "[@reverse]\n"
+            "[00:02:00]い[00:02:10]\n"
+            "[00:03:00]う[00:03:10]\n"
+            "[@normal]\n"
+            "[00:04:00]え[00:04:10]\n"
+        )
+        assert self._parse_flags(content) == [False, True, True, False]
+
+    def test_prefix_form_marks_that_line(self):
+        content = (
+            "[00:01:00]あ[00:01:10]\n"
+            "[@reverse][00:02:00]い[00:02:10]\n"
+        )
+        assert self._parse_flags(content) == [False, True]
+
+    def test_marker_lines_do_not_produce_lines(self):
+        from strange_uta_game.backend.infrastructure.parsers.lyric_parser import (
+            NicokaraParser,
+        )
+
+        content = "[@reverse]\n[00:02:00]い[00:02:10]\n"
+        parsed = NicokaraParser().parse(content)
+        assert len(parsed.lines) == 1

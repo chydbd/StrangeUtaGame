@@ -359,3 +359,25 @@ class TestRubyPlaceholderRoundtrip:
         loaded_ch = loaded.sentences[0].characters[0]
         assert loaded_ch.check_count == 0
         assert [p.text for p in loaded_ch.ruby.parts] == ["ゆ", "め"]
+
+    def test_save_load_reverse_playback_roundtrip(self, tmp_path):
+        """倒放标记保存/加载 round-trip。"""
+        project = Project()
+        singer = project.get_default_singer()
+        s = Sentence.from_text("テスト", singer.id)
+        s.reverse_playback = True
+        project.sentences = [s]
+        file_path = tmp_path / "rev.sug"
+        SugProjectParser.save(project, str(file_path))
+        loaded = SugProjectParser.load(str(file_path))
+        assert loaded.sentences[0].reverse_playback is True
+
+    def test_load_without_reverse_key_defaults_false(self, tmp_path):
+        """旧 .sug（无 reverse_playback 键）加载为 False。"""
+        project = Project()
+        singer = project.get_default_singer()
+        project.sentences = [Sentence.from_text("テスト", singer.id)]
+        file_path = tmp_path / "old.sug"
+        SugProjectParser.save(project, str(file_path))
+        loaded = SugProjectParser.load(str(file_path))
+        assert loaded.sentences[0].reverse_playback is False

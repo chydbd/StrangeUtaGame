@@ -459,6 +459,7 @@ class SugProjectParser:
             "id": sentence.id,
             "singer_id": sentence.singer_id,
             "characters": characters,
+            **({"reverse_playback": True} if sentence.reverse_playback else {}),
         }
 
     # ==================== 反序列化 (Dict → Project) ====================
@@ -615,6 +616,7 @@ class SugProjectParser:
             id=data.get("id") or str(uuid4()),
             singer_id=effective_singer_id,
             characters=characters,
+            reverse_playback=bool(data.get("reverse_playback", False)),
         )
 
         return sentence

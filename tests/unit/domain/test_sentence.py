@@ -158,3 +158,13 @@ class TestSentence:
 
         assert result is True
         assert sentence.characters == []
+
+    def test_reverse_playback_default_false_and_settable(self):
+        s = Sentence(singer_id="s1")
+        assert s.reverse_playback is False
+        s.reverse_playback = True
+        assert s.reverse_playback is True
+
+    def test_from_text_reverse_playback_default_false(self):
+        s = Sentence.from_text("测试", "s1")
+        assert s.reverse_playback is False

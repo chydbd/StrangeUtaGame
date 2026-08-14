@@ -23,6 +23,29 @@ def _cjk_strip(s: str) -> str:
     return s.strip(_HALF_WS)
 
 
+_REVERSE_TAG_RE = re.compile(r"\[@(reverse|normal)\]")
+
+
+def _consume_reverse_tag(raw_line: str) -> Tuple[Optional[str], Optional[str]]:
+    """从行首提取倒放段标记，返回 ``(tag, 剩余内容)``。
+
+    - ``[@reverse]`` / ``[@normal]`` 独立成行：返回 ``("reverse"/"normal", None)``
+      （不产生歌词行）。
+    - 标记作为行首前缀（如 ``[@reverse][00:30:00]薔...``）：返回标记与剩余内容，
+      该行按标记置位。
+    - 无标记：返回 ``(None, raw_line)``。
+    """
+    text = raw_line.strip()
+    match = _REVERSE_TAG_RE.match(text)
+    if match is None:
+        return None, raw_line
+    tag = match.group(1)
+    rest = text[match.end():].strip()
+    if not rest:
+        return tag, None
+    return tag, rest
+
+
 def _cjk_lstrip(s: str) -> str:
     """仅去除左侧 ASCII 空白字符，保留全角空格（U+3000）。"""
     return s.lstrip(_HALF_WS)
@@ -86,6 +109,7 @@ class NicokaraParsedLine:
     line_end_ts: Optional[int] = None  # 行末未消费的时间戳（句尾释放 ts）
     # char_idx → 释放 ts（句中双 ts 模式，绑给 linked group 尾字符）
     release_ts_map: Dict[int, int] = field(default_factory=dict)
+    reverse_playback: bool = False  # 本行处于倒放段（[@reverse] 标记）
 
 
 @dataclass
@@ -724,8 +748,18 @@ class NicokaraParser:
 
         # 解析正文行
         parsed_lines = []
+        reverse_active = False
         for line_text in body_lines:
-            if not line_text:
+            # 倒放段标记 [@reverse] / [@normal]：独立行切换状态不产生行；
+            # 行首前缀 [@reverse][MM:SS:CC]… 剥离前缀后按标记置位该行。
+            tag, content = _consume_reverse_tag(line_text)
+            if tag == "reverse":
+                reverse_active = True
+            elif tag == "normal":
+                reverse_active = False
+            if content is None:
+                continue
+            if not content:
                 # 空行：保留作为用户排版意图
                 parsed_lines.append(
                     NicokaraParsedLine(
@@ -733,11 +767,13 @@ class NicokaraParser:
                         timetags=[],
                         line_singer_key="",
                         char_singer_map={},
+                        reverse_playback=reverse_active,
                     )
                 )
                 continue
-            parsed = self._parse_body_line(line_text)
+            parsed = self._parse_body_line(content)
             if parsed is not None:
+                parsed.reverse_playback = reverse_active
                 parsed_lines.append(parsed)
 
         # SHINTA 2025 规格：@RubyN 编号应从 1 连号递增、不跳号、不重复。
@@ -1004,7 +1040,13 @@ def nicokara_result_to_sentences(
 
         # 空行：保留为空 Sentence（用户排版意图）
         if not parsed.text:
-            sentences.append(Sentence(singer_id=line_singer_id, characters=[]))
+            sentences.append(
+                Sentence(
+                    singer_id=line_singer_id,
+                    characters=[],
+                    reverse_playback=parsed.reverse_playback,
+                )
+            )
             continue
 
         # 创建句子（from_text 设置默认 checkpoint 配置）
@@ -1012,6 +1054,7 @@ def nicokara_result_to_sentences(
             text=parsed.text,
             singer_id=line_singer_id,
         )
+        sentence.reverse_playback = parsed.reverse_playback
 
         # is_sentence_end（演唱停顿/释放）必须严格反映文件事实：
         # from_text 默认把末字标为 is_sentence_end=True，但 Nicokara 行可能没有

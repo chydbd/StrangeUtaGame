@@ -1,4 +1,4 @@
-﻿"""Nicokara (ニコカラ) LRC 格式导出器。
+"""Nicokara (ニコカラ) LRC 格式导出器。
 
 输出 RhythmicaLyrics 风格的 Nicokara 逐字 LRC 格式：
 - 时间戳格式: [MM:SS.CC]（分:秒:厘秒，冒号分隔）
@@ -41,6 +41,23 @@ def _format_nicokara_ts(timestamp_ms: int, offset_ms: int = 0) -> str:
 
 _FULLWIDTH_CARET = "\uff3e"  # ＾
 _ASCII_CARET = "^"
+
+
+def _append_reverse_markers(
+    output_lines: List[str], sentence: Sentence, reverse_active: bool
+) -> bool:
+    """按 ``sentence.reverse_playback`` 维护 ``[@reverse]`` / ``[@normal]`` 标记行。
+
+    倒放段（``[@reverse]`` 独立行标记后续行、``[@normal]`` 结束）与主仓库渲染端
+    的 LRC 契约一致。返回新的 active 状态。
+    """
+    if sentence.reverse_playback and not reverse_active:
+        output_lines.append("[@reverse]")
+        return True
+    if not sentence.reverse_playback and reverse_active:
+        output_lines.append("[@normal]")
+        return False
+    return reverse_active
 
 
 def strip_variation_selectors(text: str) -> str:
@@ -129,6 +146,7 @@ class NicokaraExporter(BaseExporter):
         prev_singer_id: Optional[str] = None
         default_singer_id = self._get_default_singer_id(project)
         known_singer_ids: Set[str] = {s.id for s in project.singers}
+        reverse_active = False
 
         for i, sentence in enumerate(project.sentences):
             # 空行（用户排版意图）无条件保留：
@@ -175,6 +193,9 @@ class NicokaraExporter(BaseExporter):
                 and sentence.text.strip()
             ):
                 continue
+            reverse_active = _append_reverse_markers(
+                output_lines, sentence, reverse_active
+            )
             output_lines.append(line_text)
 
             if sentence.has_timetags:
@@ -187,6 +208,9 @@ class NicokaraExporter(BaseExporter):
             # 【svN】标签。先注释保留以便回溯，不作为 fallback。
             # if is_blank_line:
             #     prev_singer_id = None
+
+        if reverse_active:
+            output_lines.append("[@normal]")
 
         try:
             with open(file_path, "w", encoding="utf-8") as f:
@@ -446,6 +470,7 @@ class NicokaraWithRubyExporter(NicokaraExporter):
         prev_end_ms = 0
         prev_singer_id: Optional[str] = None
         default_singer_id = self._get_default_singer_id(project)
+        reverse_active = False
 
         for i, sentence in enumerate(project.sentences):
             # 空行（用户排版意图）无条件保留：
@@ -490,6 +515,9 @@ class NicokaraWithRubyExporter(NicokaraExporter):
                 and sentence.text.strip()
             ):
                 continue
+            reverse_active = _append_reverse_markers(
+                output_lines, sentence, reverse_active
+            )
             output_lines.append(line_text)
 
             if sentence.has_timetags:
@@ -573,6 +601,9 @@ class NicokaraWithRubyExporter(NicokaraExporter):
                     for pc in pause_chars:
                         line = line.replace(pc, replacement)
                     output_lines[i] = line
+
+        if reverse_active:
+            output_lines.append("[@normal]")
 
         try:
             # 与 nicokara3 原生格式一致：UTF-8-BOM + CRLF 行尾 + 末尾 newline

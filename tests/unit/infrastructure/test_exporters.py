@@ -1238,3 +1238,89 @@ class TestExportService:
         # 应该提示没有完成打轴
         assert len(errors) > 0
         assert any("没有时间标签" in e for e in errors)
+
+
+class TestNicokaraExporterReverse:
+    """倒放段 [@reverse] / [@normal] 标记行导出。"""
+
+    def _export(self, sentences, exporter_cls=NicokaraExporter):
+        project = Project()
+        singer = project.singers[0]
+        project.sentences = sentences
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".lrc", delete=False, encoding="utf-8"
+        ) as f:
+            temp_path = f.name
+        try:
+            exporter_cls().export(project, temp_path)
+            with open(temp_path, "r", encoding="utf-8") as f:
+                return f.read().splitlines()
+        finally:
+            os.unlink(temp_path)
+
+    def _line(self, text, singer_id, reverse=False):
+        s = Sentence.from_text(text, singer_id)
+        s.reverse_playback = reverse
+        return s
+
+    def test_middle_block_marker_order(self):
+        singer = "s1"
+        lines = self._export(
+            [
+                self._line("正常一", singer),
+                self._line("倒放一", singer, reverse=True),
+                self._line("倒放二", singer, reverse=True),
+                self._line("正常二", singer),
+            ]
+        )
+        assert "[@reverse]" in lines
+        assert "[@normal]" in lines
+        i_rev = lines.index("[@reverse]")
+        i_norm = lines.index("[@normal]")
+        # 标记行是独立行，且倒放行夹在两者之间
+        assert i_rev < i_norm
+        assert "倒放一" in lines[i_rev + 1]
+        assert "倒放二" in lines[i_rev + 2]
+        assert lines[i_norm - 1] == lines[i_rev + 2] or "倒放二" in lines[i_norm - 1]
+
+    def test_tail_block_closes_with_normal(self):
+        singer = "s1"
+        lines = self._export(
+            [
+                self._line("正常一", singer),
+                self._line("倒放一", singer, reverse=True),
+            ]
+        )
+        assert "[@reverse]" in lines
+        assert "[@normal]" in lines
+        assert lines[-1] == "[@normal]"
+
+    def test_head_block(self):
+        singer = "s1"
+        lines = self._export(
+            [
+                self._line("倒放一", singer, reverse=True),
+                self._line("倒放二", singer, reverse=True),
+                self._line("正常一", singer),
+            ]
+        )
+        assert lines[0] == "[@reverse]"
+        assert "[@normal]" in lines
+
+    def test_with_ruby_exporter_same_markers(self):
+        from strange_uta_game.backend.infrastructure.exporters.nicokara_exporter import (
+            NicokaraWithRubyExporter,
+        )
+
+        singer = "s1"
+        lines = self._export(
+            [
+                self._line("正常一", singer),
+                self._line("倒放一", singer, reverse=True),
+                self._line("正常二", singer),
+            ],
+            exporter_cls=NicokaraWithRubyExporter,
+        )
+        assert "[@reverse]" in lines
+        assert "[@normal]" in lines
+        assert lines.index("[@reverse]") < lines.index("[@normal]")

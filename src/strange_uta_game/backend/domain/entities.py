@@ -176,6 +176,12 @@ class Sentence:
     singer_id: str
     id: str = field(default_factory=lambda: str(uuid4()))
     characters: List[Character] = field(default_factory=list)
+    reverse_playback: bool = False
+    """本行是否处于「倒放」段（导出为 ``[@reverse]`` 标记行）。
+
+    倒放段的音频是反向播放的，但歌词仍是实际文字、时间戳按正常顺序递增。
+    主仓库渲染端据此按镜像时间回退卡拉OK进度。
+    """
 
     def __post_init__(self) -> None:
         if not self.id:
