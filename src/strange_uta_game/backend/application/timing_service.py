@@ -12,8 +12,10 @@
 
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, Dict, List, Callable, Protocol, Literal
 from enum import Enum, auto
+import tempfile
 import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -25,6 +27,10 @@ from strange_uta_game.backend.domain import (
     Singer,
 )
 from strange_uta_game.backend.infrastructure.audio import IAudioEngine
+from strange_uta_game.backend.infrastructure.audio.reverse_preview import (
+    build_reversed_segment_file,
+    cleanup_reversed_segment_file,
+)
 
 from .command_manager import CommandManager
 
@@ -142,6 +148,13 @@ class TimingService:
         # 音频播放位置回调
         self._audio_engine.set_position_callback(self._on_audio_position_changed)
 
+        # 倒放预览状态（[@reverse] 段打轴）
+        self._reverse_region: Optional[tuple[int, int]] = None
+        self._reverse_original_path: Optional[str] = None
+        self._reverse_temp_path: Optional[str] = None
+        self._reverse_saved_position_ms: int = 0
+        self._reverse_saved_speed: float = 1.0
+
         # karaoke预览focus信号
         self._global_qt = TimingServiceQt()
 
@@ -164,6 +177,8 @@ class TimingService:
 
     def load_audio(self, file_path: str, progress_cb=None) -> None:
         """Load audio file. Raises AudioLoadError on failure."""
+        if self._reverse_region is not None:
+            self.exit_reverse_preview()
         try:
             self._audio_engine.stop()
         except Exception:
@@ -183,13 +198,107 @@ class TimingService:
         return self._audio_engine.get_original_samples()
 
     def get_position_ms(self) -> int:
+        return self._timing_position_ms()
+
+    def get_duration_ms(self) -> int:
+        if self._reverse_region is not None:
+            return max(0, self._reverse_region[1] - self._reverse_region[0])
+        return self._audio_engine.get_duration_ms()
+
+    def is_reverse_preview_active(self) -> bool:
+        """是否处于倒放预览（[@reverse] 段打轴）。"""
+        return self._reverse_region is not None
+
+    def _timing_position_ms(self) -> int:
+        """打轴统一取数口：倒放预览时映射回原始时间轴，否则直读引擎。"""
+        if self._reverse_region is not None:
+            local = self._audio_engine.get_position_ms()
+            return self._reverse_region[0] + max(0, local)
         display_getter = getattr(self._audio_engine, "get_display_position_ms", None)
         if callable(display_getter):
             return int(display_getter())
         return self._audio_engine.get_position_ms()
 
-    def get_duration_ms(self) -> int:
-        return self._audio_engine.get_duration_ms()
+    def enter_reverse_preview(self, start_ms: int, end_ms: int) -> bool:
+        """进入倒放预览：把 [start_ms, end_ms] 音频反转加载播放，打轴时间映射回原始轴。
+
+        local 0 = 原区域末尾；听到的即正向歌词，时间戳按正常顺序递增写入。
+        失败（无音频/无采样/区间无效）时返回 False，状态不变。
+        """
+        if self._reverse_region is not None:
+            return False
+        try:
+            samples = self._audio_engine.get_original_samples()
+            info = self._audio_engine.get_audio_info()
+            if samples is None or info is None or info.sample_rate <= 0:
+                return False
+            temp_path = build_reversed_segment_file(
+                samples,
+                info.sample_rate,
+                start_ms,
+                end_ms,
+                cache_dir=Path(self._reverse_cache_dir()),
+            )
+        except Exception:
+            return False
+
+        self._reverse_original_path = getattr(info, "file_path", None)
+        self._reverse_saved_position_ms = self._audio_engine.get_position_ms()
+        try:
+            self._reverse_saved_speed = float(self._audio_engine.get_speed())
+        except Exception:
+            self._reverse_saved_speed = 1.0
+        try:
+            self._audio_engine.stop()
+        except Exception:
+            pass
+        self._audio_engine.load(temp_path)
+        try:
+            self._audio_engine.set_speed(self._reverse_saved_speed)
+        except Exception:
+            pass
+        self._audio_engine.set_position_ms(0)
+        self._reverse_temp_path = temp_path
+        self._reverse_region = (start_ms, end_ms)
+        return True
+
+    def exit_reverse_preview(self) -> None:
+        """退出倒放预览：恢复原音频、速度与位置，删除临时文件。"""
+        if self._reverse_region is None:
+            return
+        region = self._reverse_region
+        self._reverse_region = None
+        temp_path = self._reverse_temp_path
+        original_path = self._reverse_original_path
+        speed = self._reverse_saved_speed
+        position = self._reverse_saved_position_ms
+        self._reverse_temp_path = None
+        self._reverse_original_path = None
+        try:
+            self._audio_engine.stop()
+        except Exception:
+            pass
+        if original_path:
+            try:
+                self._audio_engine.load(original_path)
+            except Exception:
+                pass
+        try:
+            self._audio_engine.set_speed(speed)
+        except Exception:
+            pass
+        if original_path:
+            try:
+                self._audio_engine.set_position_ms(position)
+            except Exception:
+                pass
+        cleanup_reversed_segment_file(temp_path)
+        if region is not None:
+            # 通知前端位置回到原始时间轴
+            self._on_audio_position_changed(self._timing_position_ms())
+
+    def _reverse_cache_dir(self) -> str:
+        return tempfile.gettempdir()
 
     def is_playing(self) -> bool:
         return self._audio_engine.is_playing()
@@ -533,7 +642,7 @@ class TimingService:
         if not self._audio_engine.is_playing():
             self._audio_engine.play()
 
-        timing_pos_ms = self._audio_engine.get_position_ms()
+        timing_pos_ms = self._timing_position_ms()
         # queue_delay_ms：由前端用同一时钟源（time.monotonic 入口/出口差值）计算，
         # 补偿事件从进入 handler 到 get_position_ms() 之间的处理耗时
         timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
@@ -552,7 +661,7 @@ class TimingService:
         if not self._project:
             return
 
-        timing_pos_ms = self._audio_engine.get_position_ms()
+        timing_pos_ms = self._timing_position_ms()
         timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
         self.on_key_changed(timestamp_ms, "released")
 
@@ -568,7 +677,7 @@ class TimingService:
         if not self._audio_engine.is_playing():
             self._audio_engine.play()
 
-        timing_pos_ms = self._audio_engine.get_position_ms()
+        timing_pos_ms = self._timing_position_ms()
         timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
         self._on_tag_and_delete_next_key_changed(timestamp_ms, "pressed")
 
@@ -580,7 +689,7 @@ class TimingService:
         if not self._project:
             return
 
-        timing_pos_ms = self._audio_engine.get_position_ms()
+        timing_pos_ms = self._timing_position_ms()
         timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
         self._on_tag_and_delete_next_key_changed(timestamp_ms, "released")
 
@@ -728,7 +837,7 @@ class TimingService:
         else:
             key_type = "pressed"
 
-        timing_pos_ms = self._audio_engine.get_position_ms()
+        timing_pos_ms = self._timing_position_ms()
         timestamp_ms = max(0, timing_pos_ms + self._timing_offset_ms)
         self.on_key_changed(timestamp_ms, key_type)
 
@@ -835,7 +944,10 @@ class TimingService:
         self._recording_state = RecordingState.STOPPED
 
     def seek(self, position_ms: int) -> None:
-        """跳转到指定位置"""
+        """跳转到指定位置（原始时间轴；倒放预览时映射为本地位置）。"""
+        if self._reverse_region is not None:
+            self._audio_engine.set_position_ms(max(0, position_ms - self._reverse_region[0]))
+            return
         self._audio_engine.set_position_ms(position_ms)
 
     def set_speed(self, speed: float) -> None:
@@ -874,7 +986,10 @@ class TimingService:
 
         释放旧引擎，接入新引擎，并把已注册的位置回调与渲染进度回调迁移过去。
         不负责重载音频——由调用方在切换后决定是否重新加载当前曲目。
+        倒放预览激活时先退出，避免临时文件句柄残留。
         """
+        if self._reverse_region is not None:
+            self.exit_reverse_preview()
         old = self._audio_engine
         # 迁移渲染进度回调（两个 BASS 引擎都把它存在 _render_progress_cb 上）
         render_cb = getattr(old, "_render_progress_cb", None)
@@ -890,6 +1005,8 @@ class TimingService:
                 fn(render_cb)
 
     def release(self) -> None:
+        if self._reverse_region is not None:
+            self.exit_reverse_preview()
         self.stop()
         self._audio_engine.release()
 
@@ -897,6 +1014,10 @@ class TimingService:
         """音频位置变化回调（由音频引擎调用）"""
         if not self._callbacks:
             return
+
+        # 倒放预览：引擎本地位置映射回原始时间轴（region_start + local）
+        if self._reverse_region is not None:
+            position_ms = self._reverse_region[0] + max(0, position_ms)
 
         # 构建各演唱者的当前行位置
         singer_positions: Dict[str, int] = {}
@@ -907,7 +1028,7 @@ class TimingService:
                 line_idx = self._find_line_for_singer_at_time(singer.id, position_ms)
                 singer_positions[singer.id] = line_idx
 
-        duration_ms = self._audio_engine.get_duration_ms()
+        duration_ms = self.get_duration_ms()
 
         self._callbacks.on_position_changed(position_ms, duration_ms, singer_positions)
 
