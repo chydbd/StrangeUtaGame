@@ -47,6 +47,7 @@ class EditorToolBar(QFrame):
     open_fulltext_clicked = pyqtSignal()
     modify_char_clicked = pyqtSignal()
     insert_guide_clicked = pyqtSignal()
+    reverse_preview_toggled = pyqtSignal(bool)
     delete_rubies_by_type_clicked = pyqtSignal()
     set_singer_by_line_clicked = pyqtSignal()
     apply_singer_clicked = pyqtSignal()
@@ -103,6 +104,13 @@ class EditorToolBar(QFrame):
         edit_menu.addAction(Action(FIF.SYNC, tr("自动插入导唱符"), self, triggered=self.auto_insert_guide_clicked.emit))
         self.btn_edit.setMenu(edit_menu)
         layout.addWidget(self.btn_edit)
+
+        self.btn_reverse_preview = PushButton(tr("倒放预览"), self)
+        self.btn_reverse_preview.setCheckable(True)
+        self.btn_reverse_preview.setFixedHeight(32)
+        self.btn_reverse_preview.setMinimumWidth(90)
+        self.btn_reverse_preview.toggled.connect(self.reverse_preview_toggled.emit)
+        layout.addWidget(self.btn_reverse_preview)
 
         layout.addSpacing(10)
 

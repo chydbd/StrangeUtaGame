@@ -365,6 +365,7 @@ class EditorInterface(QWidget):
         self.toolbar.load_lyrics_clicked.connect(self._on_load_lyrics)
         self.toolbar.modify_char_clicked.connect(self._on_modify_char)
         self.toolbar.insert_guide_clicked.connect(self._on_insert_guide)
+        self.toolbar.reverse_preview_toggled.connect(self._on_reverse_preview_toggled)
         self.toolbar.bulk_change_clicked.connect(self._on_bulk_change)
         self.toolbar.modify_line_clicked.connect(self._on_modify_line)
         self.toolbar.analyze_rubies_clicked.connect(self._on_analyze_rubies)
@@ -2389,6 +2390,74 @@ class EditorInterface(QWidget):
         if self._timing_service:
             pos = self._timing_service.get_current_position()
             self.preview.set_focus_position(pos.line_idx, pos.char_idx)
+
+    def _reverse_preview_region_ms(self):
+        """倒放预览区域：优先用户 playback range，否则当前位置起 10s。"""
+        start = self._playback_range_start_ms
+        end = self._playback_range_end_ms
+        if start is not None and end is not None and end > start:
+            return start, end
+        service = self._timing_service
+        if service is None:
+            return None
+        pos = service.get_position_ms()
+        duration = service.get_duration_ms()
+        start = max(0, pos)
+        end = min(max(duration, start), start + 10_000)
+        if end - start < 1_000:
+            return None
+        return start, end
+
+    def _on_reverse_preview_toggled(self, enabled: bool) -> None:
+        """倒放预览开关：进入/退出倒放段打轴（听反转音频、时间戳落回原始轴）。"""
+        service = self._timing_service
+        if service is None:
+            self.toolbar.btn_reverse_preview.setChecked(False)
+            return
+        if enabled:
+            region = self._reverse_preview_region_ms()
+            if region is None:
+                InfoBar.warning(
+                    title=self.tr("倒放预览"),
+                    content=self.tr("请先加载音频并选择有效的时间区域"),
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=2000,
+                    parent=self,
+                )
+                self.toolbar.btn_reverse_preview.setChecked(False)
+                return
+            if not service.enter_reverse_preview(region[0], region[1]):
+                InfoBar.error(
+                    title=self.tr("倒放预览"),
+                    content=self.tr("进入倒放预览失败（音频采样不可用）"),
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=2000,
+                    parent=self,
+                )
+                self.toolbar.btn_reverse_preview.setChecked(False)
+                return
+            self._reverse_preview_region = region
+        else:
+            region = getattr(self, "_reverse_preview_region", None)
+            self._reverse_preview_region = None
+            if service.is_reverse_preview_active():
+                service.exit_reverse_preview()
+            if region is not None:
+                marked = service.mark_reverse_range(region[0], region[1])
+                if marked:
+                    InfoBar.success(
+                        title=self.tr("倒放预览"),
+                        content=self.tr("已自动标记 {n} 行为倒放段").format(n=marked),
+                        orient=Qt.Orientation.Horizontal,
+                        isClosable=True,
+                        position=InfoBarPosition.TOP,
+                        duration=2000,
+                        parent=self,
+                    )
 
     def _on_bulk_change(self):
         """Ctrl+H — 打开批量変更对话框，自动填充当前焦点字符的连词或划选区域"""
