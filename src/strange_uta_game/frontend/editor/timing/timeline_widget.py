@@ -84,6 +84,8 @@ class WaveformDisplay(QWidget):
         self._current_ms = 0
         self._range_start_ms: Optional[int] = None
         self._range_end_ms: Optional[int] = None
+        # 倒放预览区间（原始轴 [start, end]）：激活时高亮该区间、播放头反向移动
+        self._reverse_region: Optional[Tuple[int, int]] = None
         # 时间标签列表（含模型句柄）；label 仅在该字符第一个 checkpoint 时非空
         self._time_tags: List[TimeTag] = []
         self._warning_time_tags: List[TimeTag] = []
@@ -193,6 +195,19 @@ class WaveformDisplay(QWidget):
     ) -> None:
         self._range_start_ms = start_ms
         self._range_end_ms = end_ms
+        self._invalidate_static_layer()
+        self.update()
+
+    def set_reverse_preview(
+        self, active: bool, region: Optional[Tuple[int, int]] = None
+    ) -> None:
+        """倒放预览状态：激活时高亮区间 [start, end]，播放头换色并反向移动。"""
+        active = bool(active)
+        if active and region is not None:
+            start, end = region
+            self._reverse_region = (int(start), int(end))
+        elif not active:
+            self._reverse_region = None
         self._invalidate_static_layer()
         self.update()
 
@@ -658,6 +673,7 @@ class WaveformDisplay(QWidget):
             visible_duration_ms,
             self._range_start_ms,
             self._range_end_ms,
+            self._reverse_region,
             self._tag_edit_enabled,
             self._tag_char_enabled,
             self._tag_ruby_enabled,
@@ -699,6 +715,9 @@ class WaveformDisplay(QWidget):
         self._draw_time_grid(painter, w, h, visible_start_ms, visible_end_ms)
         self._draw_waveform(painter, w, h)
         self._draw_playback_range(
+            painter, w, h, visible_start_ms, visible_duration_ms
+        )
+        self._draw_reverse_region(
             painter, w, h, visible_start_ms, visible_duration_ms
         )
         self._draw_time_tags(painter, w, h, visible_start_ms, visible_end_ms)
@@ -801,6 +820,46 @@ class WaveformDisplay(QWidget):
 
         draw_boundary(self._range_start_ms, theme.status_complete, "A")
         draw_boundary(self._range_end_ms, theme.accent_warning, "B")
+
+    def _draw_reverse_region(
+        self,
+        painter: QPainter,
+        w: int,
+        h: int,
+        visible_start_ms: float,
+        visible_duration_ms: float,
+    ) -> None:
+        """倒放预览：高亮反转区间并标注「倒放」边界，播放头在其中反向移动。"""
+        if self._reverse_region is None or visible_duration_ms <= 0:
+            return
+        start, end = self._reverse_region
+        if end <= start:
+            return
+        visible_end_ms = visible_start_ms + visible_duration_ms
+        x0 = self._ts_to_x(start, visible_start_ms, visible_duration_ms, w)
+        x1 = self._ts_to_x(end, visible_start_ms, visible_duration_ms, w)
+        if x1 <= 0 or x0 >= w:
+            return
+        x0 = max(0, min(w, x0))
+        x1 = max(0, min(w, x1))
+
+        fill = QColor(theme.accent_warning)
+        fill.setAlpha(40)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(fill))
+        painter.drawRect(x0, 0, x1 - x0, h)
+
+        painter.setPen(QPen(theme.accent_warning, 1, Qt.PenStyle.DashLine))
+        painter.drawLine(x0, 0, x0, h)
+        painter.drawLine(x1, 0, x1, h)
+
+        # 区间标签：贴在区间右端底部（反转起点 = 原区间末尾）
+        if visible_start_ms <= end <= visible_end_ms:
+            font = painter.font()
+            font.setPointSize(8)
+            painter.setFont(font)
+            painter.setPen(theme.accent_warning)
+            painter.drawText(x1 - 40, h - 4, self.tr("倒放→"))
 
     @staticmethod
     def _format_ruby_label(ruby_text: str) -> str:
@@ -937,11 +996,16 @@ class WaveformDisplay(QWidget):
             ratio = (self._current_ms - visible_start_ms) / visible_duration_ms
             x = int(ratio * w)
 
-            painter.setPen(QPen(theme.accent_primary, 2))
+            # 倒放预览时播放头用警示色，配合反向移动强化"正在播放反转音频"
+            if self._reverse_region is not None:
+                color = theme.accent_warning
+            else:
+                color = theme.accent_primary
+            painter.setPen(QPen(color, 2))
             painter.drawLine(x, 0, x, h)
 
             # 播放头三角形标记
-            painter.setBrush(QBrush(theme.accent_primary))
+            painter.setBrush(QBrush(color))
             triangle = QPolygon([
                 QPoint(x - 6, 0),
                 QPoint(x + 6, 0),
@@ -1278,6 +1342,11 @@ class TimelineWidget(QWidget):
         self, start_ms: Optional[int], end_ms: Optional[int]
     ) -> None:
         self.waveform_display.set_playback_range(start_ms, end_ms)
+
+    def set_reverse_preview(
+        self, active: bool, region=None
+    ) -> None:
+        self.waveform_display.set_reverse_preview(active, region)
 
     def set_time_tags(self, tags: List[Tuple[int, str, int, int, int, bool, Optional[str]]]):
         self.waveform_display.set_time_tags(tags)

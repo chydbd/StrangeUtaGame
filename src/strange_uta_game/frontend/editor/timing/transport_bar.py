@@ -143,6 +143,8 @@ class TransportBar(QFrame):
         self._range_end_ms: int | None = None
         self._is_playing = False
         self._is_dragging = False
+        # 倒放预览状态：激活时显示反转标识，进度条位置按镜像轴（反向）走
+        self._reverse_preview = False
         # 速度滑块拖动中：拖动期间只更新标签，松手（sliderReleased）才应用速度，
         # 避免每个中间值都触发变速（HQ 模式下会刷屏预渲染）。滚轮/点击/键盘
         # 不经拖动，仍即时生效。
@@ -160,6 +162,7 @@ class TransportBar(QFrame):
                 "playing": self._is_playing,
                 "range_start": self._range_start_ms,
                 "range_end": self._range_end_ms,
+                "reverse": self._reverse_preview,
             }
             detach_layout_for_rebuild(self)
             self._init_ui()
@@ -168,6 +171,7 @@ class TransportBar(QFrame):
             self.set_position(saved["current"])
             self.set_playing(saved["playing"])
             self.set_playback_range(saved["range_start"], saved["range_end"])
+            self.set_reverse_preview(saved["reverse"])
         super().changeEvent(event)
 
     def _init_ui(self):
@@ -189,6 +193,15 @@ class TransportBar(QFrame):
         self.lbl_time.setStyleSheet("font-family: monospace; font-size: 12px;")
         self.lbl_time.setMinimumWidth(140)
         layout.addWidget(self.lbl_time)
+
+        # 倒放预览徽标：激活时醒目提示当前播放的是反转音频
+        self.lbl_reverse = CaptionLabel(self.tr("◀ 倒放预览"), self)
+        self.lbl_reverse.setStyleSheet(
+            f"color: {theme.accent_warning.name()}; font-weight: bold;"
+        )
+        self.lbl_reverse.setToolTip(self.tr("正在播放反转音频，时间轴反向移动"))
+        self.lbl_reverse.hide()
+        layout.addWidget(self.lbl_reverse)
 
         self.slider_progress = PlaybackRangeSlider(Qt.Orientation.Horizontal, self)
         self.slider_progress.setRange(0, 10000)
@@ -322,6 +335,13 @@ class TransportBar(QFrame):
     def set_playing(self, playing: bool):
         self._is_playing = playing
         self.btn_play.setIcon(FIF.PAUSE if playing else FIF.PLAY)
+
+    def set_reverse_preview(self, active: bool) -> None:
+        """倒放预览状态：激活时显示「倒放预览」徽标。"""
+        active = bool(active)
+        self._reverse_preview = active
+        if hasattr(self, "lbl_reverse"):
+            self.lbl_reverse.setVisible(active)
 
     def _update_label(self):
         self._update_label_with_time(self._current_ms)

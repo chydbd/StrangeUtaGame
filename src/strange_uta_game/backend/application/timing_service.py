@@ -210,6 +210,22 @@ class TimingService:
             return self._reverse_original_duration_ms
         return self._audio_engine.get_duration_ms()
 
+    def map_to_display(self, position_ms: int) -> int:
+        """写入轴位置 → 显示轴位置。
+
+        倒放预览时镜像（``region_start + region_end - t``）：反转音频的 local 0
+        播放的是原区间末尾的声音，播放头从区间右端向左端移动，视觉上"倒放"；
+        非预览时原样返回。
+        """
+        if self._reverse_region is not None:
+            start, end = self._reverse_region
+            return start + end - position_ms
+        return position_ms
+
+    def get_display_position_ms(self) -> int:
+        """UI 显示位置（倒放预览时为镜像位置，播放头反向移动）。"""
+        return self.map_to_display(self._timing_position_ms())
+
     def is_reverse_preview_active(self) -> bool:
         """是否处于倒放预览（[@reverse] 段打轴）。"""
         return self._reverse_region is not None
@@ -997,9 +1013,25 @@ class TimingService:
         self._recording_state = RecordingState.STOPPED
 
     def seek(self, position_ms: int) -> None:
-        """跳转到指定位置（原始时间轴；倒放预览时映射为本地位置）。"""
+        """跳转到指定位置（原始时间轴；倒放预览时映射为本地位置）。
+
+        ``position_ms`` 为**写入轴**（打轴时间戳轴 = ``region_start + local``）。
+        """
         if self._reverse_region is not None:
             self._audio_engine.set_position_ms(max(0, position_ms - self._reverse_region[0]))
+            return
+        self._audio_engine.set_position_ms(position_ms)
+
+    def seek_display(self, position_ms: int) -> None:
+        """按**显示轴**跳转：倒放预览时 ``position_ms`` 为镜像位置
+        （播放头显示值），本地 = ``region_end - position_ms``，保证"拖到哪、
+        播放头就停在哪、听到的就是该处内容"自洽；非预览时同 :meth:`seek`。
+        """
+        if self._reverse_region is not None:
+            start, end = self._reverse_region
+            local = end - position_ms
+            local = max(0, min(local, end - start))
+            self._audio_engine.set_position_ms(local)
             return
         self._audio_engine.set_position_ms(position_ms)
 

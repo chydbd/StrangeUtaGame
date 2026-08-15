@@ -13,6 +13,12 @@ class _FakeTimingService:
     def seek(self, ms: int) -> None:
         self.seeked_ms = ms
 
+    def is_reverse_preview_active(self) -> bool:
+        return False
+
+    def map_to_display(self, ms: int) -> int:
+        return ms
+
 
 class _FakeRangeTimingService(_FakeTimingService):
     def __init__(self, position_ms: int) -> None:
@@ -193,6 +199,9 @@ def test_poll_pauses_exactly_at_locked_end_at_1_5x_speed():
 
         def seek(self, ms: int) -> None:
             self.seeked_ms = ms
+
+        def map_to_display(self, ms: int) -> int:
+            return ms
 
         def pause(self) -> None:
             self.paused = True
