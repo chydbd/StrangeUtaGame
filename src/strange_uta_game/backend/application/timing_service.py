@@ -154,6 +154,9 @@ class TimingService:
         self._reverse_temp_path: Optional[str] = None
         self._reverse_saved_position_ms: int = 0
         self._reverse_saved_speed: float = 1.0
+        # 进入预览前的完整原始时长（引擎加载临时反转文件后会丢失原始时长，
+        # 而位置映射在原始轴，UI 时长必须与位置同一坐标系）
+        self._reverse_original_duration_ms: int = 0
 
         # karaoke预览focus信号
         self._global_qt = TimingServiceQt()
@@ -202,7 +205,9 @@ class TimingService:
 
     def get_duration_ms(self) -> int:
         if self._reverse_region is not None:
-            return max(0, self._reverse_region[1] - self._reverse_region[0])
+            # 位置映射在原始轴（region_start + local），时长必须与之一致，
+            # 否则 UI 位置（如 60000ms）超过区间时长（10s）→ 播放头锁死在末尾。
+            return self._reverse_original_duration_ms
         return self._audio_engine.get_duration_ms()
 
     def is_reverse_preview_active(self) -> bool:
@@ -243,6 +248,7 @@ class TimingService:
             return False
 
         self._reverse_original_path = getattr(info, "file_path", None)
+        self._reverse_original_duration_ms = self._audio_engine.get_duration_ms()
         self._reverse_saved_position_ms = self._audio_engine.get_position_ms()
         try:
             self._reverse_saved_speed = float(self._audio_engine.get_speed())
@@ -274,6 +280,7 @@ class TimingService:
         position = self._reverse_saved_position_ms
         self._reverse_temp_path = None
         self._reverse_original_path = None
+        self._reverse_original_duration_ms = 0
         try:
             self._audio_engine.stop()
         except Exception:
@@ -971,7 +978,11 @@ class TimingService:
     # ==================== 音频控制 ====================
 
     def play(self) -> None:
-        """开始播放"""
+        """开始播放（倒放预览已播到区间末尾时，从区间起点重播）。"""
+        if self._reverse_region is not None:
+            local = self._audio_engine.get_position_ms()
+            if local >= self._reverse_region[1] - self._reverse_region[0]:
+                self._audio_engine.set_position_ms(0)
         self._audio_engine.play()
         self._recording_state = RecordingState.PLAYING
 

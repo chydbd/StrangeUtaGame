@@ -2441,6 +2441,12 @@ class EditorInterface(QWidget):
                 self.toolbar.btn_reverse_preview.setChecked(False)
                 return
             self._reverse_preview_region = region
+            # 立即同步显示：位置映射在原始轴（region_start），时长不变，
+            # 避免进入后播放头仍停在旧位置、与引擎实际位置脱节。
+            pos = service.get_position_ms()
+            self.transport.set_position(pos)
+            self.timeline.set_position(pos)
+            self.preview.set_current_time_ms(pos)
         else:
             region = getattr(self, "_reverse_preview_region", None)
             self._reverse_preview_region = None
@@ -5125,8 +5131,11 @@ class EditorInterface(QWidget):
             self.transport.set_playing(False)
             self.preview.set_playing(False)
             self.timeline.set_playing(False)
-            self.transport.set_position(0)
-            self.timeline.set_position(0)
+            # 倒放预览时引擎位置 0 = 区间起点（原始轴 region_start），
+            # 统一经服务取映射后的位置，避免显示 0 与真实位置脱节。
+            pos = self._timing_service.get_position_ms()
+            self.transport.set_position(pos)
+            self.timeline.set_position(pos)
             self._status_state = "stopped"
             self.lbl_status.setText(self.tr("已停止"))
             self._update_mode_indicator(False)
