@@ -3040,10 +3040,20 @@ class KaraokePreview(QWidget):
                         )
                     else:
                         if next_time < char_time:
-                            # 倒放段递减字符时间戳：演唱区间反转
-                            # [ts_{i+1}, ts_i]（先唱端点小、唱完端点大）
-                            char_time, next_time = next_time, char_time
-                        if current_time >= next_time and next_time > char_time:
+                            # 倒放段递减字符时间戳：播放位置从大到小经过字符，
+                            # 字符在 [next, char]（next 小、char 大）内从 0 累积到 100
+                            if current_time >= char_time:
+                                wipe_ratio = 0.0
+                            elif current_time <= next_time:
+                                wipe_ratio = 1.0
+                            else:
+                                duration = char_time - next_time
+                                wipe_ratio = (
+                                    (char_time - current_time) / duration
+                                    if duration > 0
+                                    else 1.0
+                                )
+                        elif current_time >= next_time and next_time > char_time:
                             wipe_ratio = 1.0
                         elif current_time >= char_time:
                             duration = next_time - char_time
