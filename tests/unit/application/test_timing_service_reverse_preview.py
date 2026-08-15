@@ -1,7 +1,7 @@
 """TimingService 倒放预览（[@reverse] 段打轴）测试。
 
-覆盖：enter/exit 的 load 顺序与临时文件清理；位置映射（region_start + local）；
-seek 映射；打轴 key 写入映射后的时间戳。
+覆盖：enter/exit 的 load 顺序与临时文件清理；位置映射（region_end - local，
+与正向渲染的出现时刻一致）；seek 映射；打轴 key 写入映射后的时间戳。
 """
 
 from typing import Callable, Optional
@@ -121,12 +121,12 @@ class TestTimingServiceReversePreview:
         assert "reverse_preview_10000_15000.wav" in engine.loaded_paths[-1]
         assert Path(engine.loaded_paths[-1]).exists()
 
-        # 本地位置 0 → 映射为 region_start
+        # 本地位置 0（反转起点 = 原区间末尾的样本）→ 映射为 region_end
         engine.set_position_ms(0)
-        assert service.get_position_ms() == 10_000
-        # 本地 3000ms → region_start + 3000
+        assert service.get_position_ms() == 15_000
+        # 本地 3000ms → region_end - 3000
         engine.set_position_ms(3_000)
-        assert service.get_position_ms() == 13_000
+        assert service.get_position_ms() == 12_000
         # duration 与位置同一坐标系：即使引擎已被替换为 5s 临时文件，
         # 对外仍报告完整原始时长（否则 UI 位置超过时长、播放头锁死在末尾）
         assert engine.get_duration_ms() == 5_000
@@ -166,34 +166,36 @@ class TestTimingServiceReversePreview:
             lambda: str(tmp_path),
         )
         service.enter_reverse_preview(10_000, 15_000)
+        # 位置轴：seek(12000) → 本地 15000 - 12000 = 3000（拖到哪、听到的就是哪）
         service.seek(12_000)
-        assert engine.get_position_ms() == 2_000
+        assert engine.get_position_ms() == 3_000
 
-    def test_display_axis_mirrors_position(self, tmp_path, monkeypatch):
-        """显示轴镜像：播放头在区间内从右向左走（反转音频视觉）。"""
+    def test_position_axis_is_reverse_and_matches_heard_content(self, tmp_path, monkeypatch):
+        """位置轴 = region_end - local：播放头在区间内从右向左走（反转音频视觉），
+        且打轴时间戳 = 该声音在正向渲染中的出现时刻。"""
         engine = FakeAudioEngine()
         service = _make_service(engine)
         monkeypatch.setattr(
             "strange_uta_game.backend.application.timing_service.tempfile.gettempdir",
             lambda: str(tmp_path),
         )
-        # 非预览：显示轴 == 写入轴
+        # 非预览：位置 = 引擎位置
         engine.set_position_ms(3_000)
+        assert service.get_position_ms() == 3_000
         assert service.map_to_display(3_000) == 3_000
-        assert service.get_display_position_ms() == 3_000
 
         service.enter_reverse_preview(10_000, 15_000)
-        # local 0（反转起点，播放原区间末尾）→ 显示区间右端
+        # local 0（反转起点，播放原区间末尾样本 = 正常演唱开头）→ 区间右端
         engine.set_position_ms(0)
-        assert service.get_display_position_ms() == 15_000
-        # local 3000 → 显示 12000；local 5000（区间末尾）→ 显示区间左端
+        assert service.get_position_ms() == 15_000
+        # local 3000 → 12000；local 5000（区间末尾）→ 区间左端
+        engine.set_position_ms(3_000)
+        assert service.get_position_ms() == 12_000
+        engine.set_position_ms(5_000)
+        assert service.get_position_ms() == 10_000
+        # 显示位置与位置轴一致（无需再镜像）
         engine.set_position_ms(3_000)
         assert service.get_display_position_ms() == 12_000
-        engine.set_position_ms(5_000)
-        assert service.get_display_position_ms() == 10_000
-        # 写入轴不受影响（打轴时间戳仍递增落在原始轴）
-        engine.set_position_ms(3_000)
-        assert service.get_position_ms() == 13_000
 
     def test_seek_display_maps_mirrored(self, tmp_path, monkeypatch):
         """显示轴 seek：拖到哪、播放头停在哪、听到的就是该处内容。"""
@@ -204,7 +206,7 @@ class TestTimingServiceReversePreview:
             lambda: str(tmp_path),
         )
         service.enter_reverse_preview(10_000, 15_000)
-        # 显示 12000 → 本地 3000（原区间末尾倒推）
+        # 位置 12000 → 本地 3000（拖到哪、播放头停在哪、听到的就是哪）
         service.seek_display(12_000)
         assert engine.get_position_ms() == 3_000
         assert service.get_display_position_ms() == 12_000
@@ -262,11 +264,11 @@ class TestTimingServiceReversePreview:
         service.set_timing_offset(0)
 
         service.enter_reverse_preview(10_000, 15_000)
-        engine.set_position_ms(4_000)  # 本地 4s → 原始 14s
-
+        engine.set_position_ms(4_000)  # 本地 4s → 位置 15000 - 4000 = 11000
+        # 听到的内容（正常演唱）在正向渲染中于 11000ms 出现 → 时间戳 11000
         service.on_timing_key_pressed("F1")
         written = sentence.characters[0].timestamps
-        assert written == [14_000]
+        assert written == [11_000]
 
     def test_enter_fails_without_samples(self, tmp_path, monkeypatch):
         engine = FakeAudioEngine()

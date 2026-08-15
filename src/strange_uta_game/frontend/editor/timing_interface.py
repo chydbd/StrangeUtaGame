@@ -2444,12 +2444,12 @@ class EditorInterface(QWidget):
             # 明确标识正在播放反转音频（transport 徽标 + 波形区间高亮）
             self.transport.set_reverse_preview(True)
             self.timeline.set_reverse_preview(True, region)
-            # 立即同步显示：播放头显示镜像位置（区间右端 = 反转音频起点），
-            # 歌词高亮保持写入轴（region_start），时长不变。
-            display = service.get_display_position_ms()
-            self.transport.set_position(display)
-            self.timeline.set_position(display)
-            self.preview.set_current_time_ms(service.get_position_ms())
+            # 立即同步显示：播放头在区间右端（= 反转音频起点），
+            # 歌词高亮与打轴时间戳同一坐标系，时长不变。
+            pos = service.get_position_ms()
+            self.transport.set_position(pos)
+            self.timeline.set_position(pos)
+            self.preview.set_current_time_ms(pos)
         else:
             region = getattr(self, "_reverse_preview_region", None)
             self._reverse_preview_region = None
@@ -5091,10 +5091,8 @@ class EditorInterface(QWidget):
                     if dur > 0 and (pos >= dur or outside_range):
                         target = start if start is not None else 0
                         self._timing_service.seek(target)
-                        # 显示轴：倒放预览时起点显示在区间右端
-                        display = self._timing_service.map_to_display(target)
-                        self.transport.set_position(display)
-                        self.timeline.set_position(display)
+                        self.transport.set_position(target)
+                        self.timeline.set_position(target)
                         self.preview.set_current_time_ms(target)
                 self._timing_service.play()
                 self.transport.set_playing(True)
@@ -5138,12 +5136,11 @@ class EditorInterface(QWidget):
             self.transport.set_playing(False)
             self.preview.set_playing(False)
             self.timeline.set_playing(False)
-            # 倒放预览时引擎位置 0 = 区间起点（显示轴为区间右端），
-            # 统一经服务取映射后的显示位置，避免显示 0 与真实位置脱节。
+            # 倒放预览时引擎位置 0 = 区间起点（位置轴为区间右端），
+            # 统一经服务取位置，避免显示 0 与真实位置脱节。
             pos = self._timing_service.get_position_ms()
-            display = self._timing_service.map_to_display(pos)
-            self.transport.set_position(display)
-            self.timeline.set_position(display)
+            self.transport.set_position(pos)
+            self.timeline.set_position(pos)
             self._status_state = "stopped"
             self.lbl_status.setText(self.tr("已停止"))
             self._update_mode_indicator(False)
@@ -5161,16 +5158,15 @@ class EditorInterface(QWidget):
         log_perf_event("editor.seek.start", target_ms=ms, line=getattr(self, "_current_line_idx", -1))
         self._suspend_auto_scroll()
         if self._timing_service:
-            # ms 是显示轴（用户看到的播放头位置）：倒放预览时引擎按镜像映射，
-            # 保证"拖到哪、播放头就停在哪、听到的就是该处内容"自洽
+            # ms 是位置轴（用户看到的播放头位置），倒放预览时 seek 内部
+            # 映射为本地位置，保证"拖到哪、播放头就停在哪、听到的就是该处内容"
             if self._timing_service.is_reverse_preview_active():
                 self._timing_service.seek_display(ms)
             else:
                 self._timing_service.seek(ms)
             self.transport.set_position(ms)
             self.timeline.set_position(ms)
-            # 歌词高亮用写入轴：倒放预览时 ms 为显示轴，镜像回写入轴
-            self.preview.set_current_time_ms(self._timing_service.map_to_display(ms))
+            self.preview.set_current_time_ms(ms)
         log_perf_event("editor.seek.end", target_ms=ms, line=getattr(self, "_current_line_idx", -1))
 
     def _on_speed_changed(self, speed: float):
@@ -6842,7 +6838,7 @@ class EditorInterface(QWidget):
             self._on_stop()
         elif action == "seek_back":
             if self._timing_service and self._timing_service.is_playing():
-                # 显示轴：倒放预览时播放头反向（向左）走，快退 = 播放头向右回退
+                # 位置轴 = 显示轴：倒放预览时播放头反向（向左）走，快退 = 播放头向右回退
                 cur = self._timing_service.get_display_position_ms()
                 dur = self._timing_service.get_duration_ms()
                 speed = self._timing_service.get_speed()
@@ -6852,7 +6848,7 @@ class EditorInterface(QWidget):
                     self._on_seek(max(0, cur - int(self._rewind_ms * speed)))
         elif action == "seek_forward":
             if self._timing_service and self._timing_service.is_playing():
-                # 显示轴：倒放预览时快进 = 播放头继续向左（沿播放方向）
+                # 位置轴 = 显示轴：倒放预览时快进 = 播放头继续向左（沿播放方向）
                 cur = self._timing_service.get_display_position_ms()
                 dur = self._timing_service.get_duration_ms()
                 speed = self._timing_service.get_speed()
@@ -7623,13 +7619,24 @@ class EditorInterface(QWidget):
         engine = self._timing_service._audio_engine
         position_ms = self._timing_service.get_position_ms()
         duration_ms = self._timing_service.get_duration_ms()
-        reached_locked_end = (
-            engine.is_playing()
-            and self._playback_range_end_ms is not None
-            and position_ms >= self._playback_range_end_ms
-        )
+        if self._timing_service.is_reverse_preview_active():
+            # 倒放预览：位置轴从右向左走，到达锁定终点 = 位置到达区间起点
+            # （反转音频播到区间末尾）
+            reached_locked_end = (
+                engine.is_playing()
+                and self._playback_range_start_ms is not None
+                and position_ms <= self._playback_range_start_ms
+            )
+            lock_at_ms = self._playback_range_start_ms
+        else:
+            reached_locked_end = (
+                engine.is_playing()
+                and self._playback_range_end_ms is not None
+                and position_ms >= self._playback_range_end_ms
+            )
+            lock_at_ms = self._playback_range_end_ms
         if reached_locked_end:
-            position_ms = self._playback_range_end_ms
+            position_ms = lock_at_ms
             self._timing_service.seek(position_ms)
 
         # 页面切换动画期间（self.y() != 0）跳过 UI 重绘，避免与动画争抢导致控件抖动。
@@ -7640,11 +7647,10 @@ class EditorInterface(QWidget):
                 self.timeline.set_duration(duration_ms)
                 self.preview.set_duration(duration_ms)
                 self._last_polled_duration_ms = duration_ms
-            # 显示轴：倒放预览时播放头在区间内反向（从右向左）移动；
-            # 歌词高亮用写入轴（打轴时间戳落点）
-            display_ms = self._timing_service.map_to_display(position_ms)
-            self.transport.set_position(display_ms)
-            self.timeline.set_position(display_ms)
+            # 位置轴 = 显示轴：倒放预览时播放头在区间内反向（从右向左）移动，
+            # 歌词高亮与打轴时间戳同一坐标系（听到什么高亮什么）
+            self.transport.set_position(position_ms)
+            self.timeline.set_position(position_ms)
             self.preview.set_current_time_ms(position_ms)
 
         if reached_locked_end:
@@ -7793,14 +7799,9 @@ class EditorInterface(QWidget):
             self.timeline.set_duration(duration_ms)
             self.preview.set_duration(duration_ms)
             self._last_polled_duration_ms = duration_ms
-        # 显示轴：倒放预览时播放头反向移动；歌词高亮用写入轴（打轴时间戳落点）
-        display_ms = (
-            self._timing_service.map_to_display(position_ms)
-            if self._timing_service
-            else position_ms
-        )
-        self.transport.set_position(display_ms)
-        self.timeline.set_position(display_ms)
+        # 位置轴 = 显示轴：倒放预览时播放头反向移动，歌词高亮同一坐标系
+        self.transport.set_position(position_ms)
+        self.timeline.set_position(position_ms)
         self.preview.set_current_time_ms(position_ms)
         if self._timing_service:
             self.transport.set_playing(playing)

@@ -205,36 +205,38 @@ class TimingService:
 
     def get_duration_ms(self) -> int:
         if self._reverse_region is not None:
-            # 位置映射在原始轴（region_start + local），时长必须与之一致，
+            # 位置映射在原始轴（region_end - local），时长必须与之一致，
             # 否则 UI 位置（如 60000ms）超过区间时长（10s）→ 播放头锁死在末尾。
             return self._reverse_original_duration_ms
         return self._audio_engine.get_duration_ms()
 
     def map_to_display(self, position_ms: int) -> int:
-        """写入轴位置 → 显示轴位置。
+        """位置 → 显示位置（恒等）。
 
-        倒放预览时镜像（``region_start + region_end - t``）：反转音频的 local 0
-        播放的是原区间末尾的声音，播放头从区间右端向左端移动，视觉上"倒放"；
-        非预览时原样返回。
+        倒放预览的位置轴本身就是反向的（``region_end - local``，播放头从区间
+        右端向左端移动，视觉"倒放"），无需再镜像；保留该方法仅为兼容调用方。
         """
-        if self._reverse_region is not None:
-            start, end = self._reverse_region
-            return start + end - position_ms
         return position_ms
 
     def get_display_position_ms(self) -> int:
-        """UI 显示位置（倒放预览时为镜像位置，播放头反向移动）。"""
-        return self.map_to_display(self._timing_position_ms())
+        """UI 显示位置（倒放预览时位置轴即反向显示轴）。"""
+        return self._timing_position_ms()
 
     def is_reverse_preview_active(self) -> bool:
         """是否处于倒放预览（[@reverse] 段打轴）。"""
         return self._reverse_region is not None
 
     def _timing_position_ms(self) -> int:
-        """打轴统一取数口：倒放预览时映射回原始时间轴，否则直读引擎。"""
+        """打轴统一取数口：倒放预览时映射回原始时间轴，否则直读引擎。
+
+        倒放预览的位置轴 = ``region_end - local``：反转音频 local 0 播放的是
+        原区间末尾的样本（正常演唱的开头），该声音在**正向渲染**中出现的位置
+        正是 ``region_end``；随 local 增大位置向左走，与播放头显示一致，
+        打出的时间戳（该行渲染出现时刻）与听到的内容一一对应。
+        """
         if self._reverse_region is not None:
             local = self._audio_engine.get_position_ms()
-            return self._reverse_region[0] + max(0, local)
+            return self._reverse_region[1] - max(0, local)
         display_getter = getattr(self._audio_engine, "get_display_position_ms", None)
         if callable(display_getter):
             return int(display_getter())
@@ -243,7 +245,8 @@ class TimingService:
     def enter_reverse_preview(self, start_ms: int, end_ms: int) -> bool:
         """进入倒放预览：把 [start_ms, end_ms] 音频反转加载播放，打轴时间映射回原始轴。
 
-        local 0 = 原区域末尾；听到的即正向歌词，时间戳按正常顺序递增写入。
+        local 0 = 原区域末尾；听到的即正向歌词，时间戳 = ``region_end - local``
+        从右向左写入（即该声音在正向渲染中出现的位置，与播放头显示一致）。
         失败（无音频/无采样/区间无效）时返回 False，状态不变。
         """
         if self._reverse_region is not None:
@@ -1015,17 +1018,9 @@ class TimingService:
     def seek(self, position_ms: int) -> None:
         """跳转到指定位置（原始时间轴；倒放预览时映射为本地位置）。
 
-        ``position_ms`` 为**写入轴**（打轴时间戳轴 = ``region_start + local``）。
-        """
-        if self._reverse_region is not None:
-            self._audio_engine.set_position_ms(max(0, position_ms - self._reverse_region[0]))
-            return
-        self._audio_engine.set_position_ms(position_ms)
-
-    def seek_display(self, position_ms: int) -> None:
-        """按**显示轴**跳转：倒放预览时 ``position_ms`` 为镜像位置
-        （播放头显示值），本地 = ``region_end - position_ms``，保证"拖到哪、
-        播放头就停在哪、听到的就是该处内容"自洽；非预览时同 :meth:`seek`。
+        ``position_ms`` 为**位置轴**（= 显示轴，倒放预览时 = ``region_end - local``），
+        与 :meth:`get_position_ms` 同一坐标系，保证"拖到哪、播放头就停在哪、
+        听到的就是该处内容"自洽。
         """
         if self._reverse_region is not None:
             start, end = self._reverse_region
@@ -1034,6 +1029,10 @@ class TimingService:
             self._audio_engine.set_position_ms(local)
             return
         self._audio_engine.set_position_ms(position_ms)
+
+    def seek_display(self, position_ms: int) -> None:
+        """按显示位置跳转：倒放预览的位置轴即显示轴，与 :meth:`seek` 等价。"""
+        self.seek(position_ms)
 
     def set_speed(self, speed: float) -> None:
         """设置播放速度"""
@@ -1100,9 +1099,10 @@ class TimingService:
         if not self._callbacks:
             return
 
-        # 倒放预览：引擎本地位置映射回原始时间轴（region_start + local）
+        # 倒放预览：引擎本地位置映射回原始时间轴（region_end - local，
+        # 与 _timing_position_ms 同一坐标系）
         if self._reverse_region is not None:
-            position_ms = self._reverse_region[0] + max(0, position_ms)
+            position_ms = self._reverse_region[1] - max(0, position_ms)
 
         # 构建各演唱者的当前行位置
         singer_positions: Dict[str, int] = {}
