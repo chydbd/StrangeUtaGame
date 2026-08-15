@@ -38,6 +38,26 @@ class SugParseError(Exception):
     pass
 
 
+def _sentence_timestamps_non_increasing(sentence: Sentence) -> bool:
+    """字符时间戳是否单调不增（倒放预览打轴的可靠特征）。
+
+    倒放预览打轴按 ``region_end - local`` 写入：行首字符 ts 最大、逐字符
+    递减（共享 ts 的连读字符相等）；正常正向打轴严格递增。用于 reverse
+    标记丢失时兜底识别倒放段，保证 .sug 保存 round-trip 与渲染端一致。
+    """
+    timestamps: list[int] = []
+    for char in sentence.characters:
+        for ts in (char.timestamps or []):
+            try:
+                timestamps.append(int(ts))
+            except (TypeError, ValueError):
+                continue
+    if len(timestamps) < 2:
+        return False
+    pairs = list(zip(timestamps, timestamps[1:]))
+    return all(a >= b for a, b in pairs) and any(a > b for a, b in pairs)
+
+
 def _split_ruby_text(ruby_text: str, char_count: int) -> List[str]:
     """将 ruby 文本拆分到多个字符（用于 v1.0 迁移）
 
@@ -459,7 +479,14 @@ class SugProjectParser:
             "id": sentence.id,
             "singer_id": sentence.singer_id,
             "characters": characters,
-            **({"reverse_playback": True} if sentence.reverse_playback else {}),
+            # reverse 标记缺失（旧工程 / 自动标记未触发）时按字符时间戳
+            # 单调不增兜底识别倒放打轴，保证 round-trip 与渲染端一致。
+            **(
+                {"reverse_playback": True}
+                if sentence.reverse_playback
+                or _sentence_timestamps_non_increasing(sentence)
+                else {}
+            ),
         }
 
     # ==================== 反序列化 (Dict → Project) ====================
